@@ -1,0 +1,26 @@
+services:
+  - type: cron
+    name: nifty500-morning-scan
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scanner.py --mode morning
+    schedule: "55 3 * * 1-5"
+    envVars:
+      - key: UPSTOX_ACCESS_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.14.3
+
+  - type: cron
+    name: nifty500-midday-scan
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scanner.py --mode midday
+    schedule: "5 7 * * 1-5"
+    envVars:
+      - key: UPSTOX_ACCESS_TOKEN
+        sync: false
+      - key: PYTHON_VERSION
+        value: 3.14.3

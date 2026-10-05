@@ -1,0 +1,32 @@
+{
+  "session_windows": {
+    "morning": {
+      "start": "09:20",
+      "end": "10:15"
+    },
+    "midday": {
+      "start": "12:30",
+      "end": "13:15"
+    }
+  },
+  "stage1": {
+    "min_price": 20,
+    "min_turnover_crore": 5,
+    "min_abs_change_pct": 0.25,
+    "max_abs_change_pct": 8.0,
+    "max_stage1_survivors": 30
+  },
+  "technical": {
+    "intraday_interval_minutes": 5,
+    "max_deep_candidates": 20,
+    "opening_range_minutes": 15,
+    "min_reward_risk": 2.0,
+    "min_trade_score": 80,
+    "min_watch_score": 65,
+    "target_pct_cap": 2.0,
+    "stop_atr_multiple": 0.8
+  },
+  "freshness": {
+    "max_quote_age_minutes": 20
+  }
+}
