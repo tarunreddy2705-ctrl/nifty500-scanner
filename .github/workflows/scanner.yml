@@ -1,0 +1,65 @@
+name: NIFTY 500 Scanner
+
+on:
+  schedule:
+    # 09:25 AM IST
+    - cron: "55 3 * * 1-5"
+
+    # 12:35 PM IST
+    - cron: "5 7 * * 1-5"
+
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Scanner mode"
+        required: true
+        default: "test"
+        type: choice
+        options:
+          - test
+          - morning
+          - midday
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout scanner
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Determine scanner mode
+        id: mode
+        shell: bash
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "mode=${{ inputs.mode }}" >> "$GITHUB_OUTPUT"
+          elif [ "${{ github.event.schedule }}" = "55 3 * * 1-5" ]; then
+            echo "mode=morning" >> "$GITHUB_OUTPUT"
+          else
+            echo "mode=midday" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Run NIFTY 500 scanner
+        env:
+          UPSTOX_ACCESS_TOKEN: ${{ secrets.UPSTOX_ACCESS_TOKEN }}
+          TZ: Asia/Kolkata
+        run: python scanner.py --mode "${{ steps.mode.outputs.mode }}"
+
+      - name: Upload scanner report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nifty500-${{ steps.mode.outputs.mode }}-${{ github.run_number }}
+          path: reports/
+          if-no-files-found: ignore
+          retention-days: 30
