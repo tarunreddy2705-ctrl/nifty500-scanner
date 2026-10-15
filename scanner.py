@@ -99,7 +99,7 @@ def market_data_freshness(quotes, max_age_minutes=20):
     if not same_day:
         return False, {'reason':'no current-session quote timestamps','timestamped_quotes':len(seen),'latest':max(seen).isoformat()}
     latest=max(same_day); age=(now-latest).total_seconds()/60
-    ok=age <= max_age_minutes
+    ok=0 <= age <= max_age_minutes
     return ok, {'reason':'fresh' if ok else f'latest quote is {age:.1f} minutes old', 'timestamped_quotes':len(seen), 'current_day_quotes':len(same_day), 'latest':latest.isoformat(), 'age_minutes':round(age,1)}
 
 def quote_by_symbol(q):
@@ -129,7 +129,7 @@ def intraday(key, interval):
     j=req(url,headers=HEADERS,timeout=20).json(); candles=(j.get('data') or {}).get('candles') or []
     if not candles: return pd.DataFrame()
     df=pd.DataFrame(candles,columns=['timestamp','open','high','low','close','volume','oi'])
-    df['timestamp']=pd.to_datetime(df['timestamp']); df=df.sort_values('timestamp').reset_index(drop=True)
+    df['timestamp']=pd.to_datetime(df['timestamp'],utc=True).dt.tz_convert(IST); df=df.sort_values('timestamp').reset_index(drop=True)
     for col in ['open','high','low','close','volume']: df[col]=pd.to_numeric(df[col],errors='coerce')
     return df.dropna(subset=['open','high','low','close'])
 
@@ -179,12 +179,12 @@ def score_candidate(row,t,cfgtech):
 
 def session_gate(mode, C):
     now=ist_now()
-    if mode=='test': return True, 'test mode bypass'
+    if mode=='test': return True, 'test mode bypass — NOT LIVE DATA'
     # Require operator-maintained, verified NSE official calendar including special closures.
     cal_path=DATA/'nse_holidays.json'
     try:
         raw=json.loads(cal_path.read_text())
-        if raw.get('year')!=now.year or raw.get('source')!='NSE_OFFICIAL' or not raw.get('verified_at'):
+        if raw.get('year')!=now.year or raw.get('source')!='NSE_OFFICIAL' or not raw.get('verified_at') or raw.get('special_closures_verified') is not True:
             return False, 'NSE OFFICIAL CALENDAR NOT VERIFIED'
         from datetime import date
         holidays={date.fromisoformat(x) for x in raw['closed_dates']}
