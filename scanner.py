@@ -8,6 +8,7 @@ import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from data_integrity import IST, ist_now, session_check, validate_quote, validate_candles
 
 ROOT=Path(__file__).resolve().parent
 DATA=ROOT/'data'; REPORTS=ROOT/'reports'; LOGS=ROOT/'logs'
@@ -34,6 +35,8 @@ def download_master():
 
 def download_universe():
     df=pd.read_csv(pd.io.common.BytesIO(req(NIFTY500,headers=UA,timeout=30).content))
+    if not {'Symbol','ISIN Code','Industry'}.issubset(df.columns) or len(df)<450:
+        raise ValueError('Official NIFTY 500 constituent response incomplete')
     return df
 
 def reconcile(master, df):
@@ -51,7 +54,7 @@ def reconcile(master, df):
         if up_sym!=sym: mismatches.append({'official':sym,'upstox':up_sym,'isin':isin})
         mapped[sym]={'company':row.get('Company Name'),'industry':row.get('Industry'),'series':row.get('Series'),'isin':isin,
                      'instrument_key':item.get('instrument_key'),'instrument_type':item.get('instrument_type'),'upstox_symbol':up_sym}
-    out={'generated_at':datetime.now().astimezone().isoformat(),'official_rows':len(df),'mapped_count':len(mapped),'unmapped':unmapped,'symbol_mismatches':mismatches,'instruments':mapped}
+    out={'generated_at':ist_now().isoformat(),'official_rows':len(df),'mapped_count':len(mapped),'unmapped':unmapped,'symbol_mismatches':mismatches,'instruments':mapped}
     (DATA/'nifty500_universe.json').write_text(json.dumps(out,indent=2,default=str)); return out
 
 def chunks(xs,n=500):
@@ -73,7 +76,7 @@ def _epoch_to_dt(value):
     try:
         x=float(value)
         if x > 10_000_000_000: x/=1000.0
-        return datetime.fromtimestamp(x).astimezone()
+        return datetime.fromtimestamp(x, IST)
     except Exception:
         return None
 
@@ -81,7 +84,7 @@ def market_data_freshness(quotes, max_age_minutes=20):
     """Fail-closed freshness check for scheduled live scans.
     Uses Upstox last_trade_time/timestamp fields when available.
     """
-    now=datetime.now().astimezone(); seen=[]
+    now=ist_now(); seen=[]
     for q in quotes.values():
         candidates=[q.get('last_trade_time'), q.get('timestamp'), q.get('ts')]
         o=q.get('ohlc') or {}
@@ -96,7 +99,7 @@ def market_data_freshness(quotes, max_age_minutes=20):
     if not same_day:
         return False, {'reason':'no current-session quote timestamps','timestamped_quotes':len(seen),'latest':max(seen).isoformat()}
     latest=max(same_day); age=(now-latest).total_seconds()/60
-    ok=age <= max_age_minutes
+    ok=0 <= age <= max_age_minutes
     return ok, {'reason':'fresh' if ok else f'latest quote is {age:.1f} minutes old', 'timestamped_quotes':len(seen), 'current_day_quotes':len(same_day), 'latest':latest.isoformat(), 'age_minutes':round(age,1)}
 
 def quote_by_symbol(q):
@@ -106,11 +109,11 @@ def quote_by_symbol(q):
         if sym: out[sym]=v
     return out
 
-def stage1(universe, quotes, c):
+def stage1(universe, quotes, c, now=None):
     qm=quote_by_symbol(quotes); rows=[]
     for sym,meta in universe['instruments'].items():
         q=qm.get(sym)
-        if not q: continue
+        if not q or not validate_quote(q,now,120)[0]: continue
         ltp=float(q.get('last_price') or 0); pc=float(q.get('prev_close_price') or 0)
         o=q.get('ohlc') or {}; vol=float(o.get('volume') or 0)
         if ltp<=0 or pc<=0: continue
@@ -126,7 +129,7 @@ def intraday(key, interval):
     j=req(url,headers=HEADERS,timeout=20).json(); candles=(j.get('data') or {}).get('candles') or []
     if not candles: return pd.DataFrame()
     df=pd.DataFrame(candles,columns=['timestamp','open','high','low','close','volume','oi'])
-    df['timestamp']=pd.to_datetime(df['timestamp']); df=df.sort_values('timestamp').reset_index(drop=True)
+    df['timestamp']=pd.to_datetime(df['timestamp'],utc=True).dt.tz_convert(IST); df=df.sort_values('timestamp').reset_index(drop=True)
     for col in ['open','high','low','close','volume']: df[col]=pd.to_numeric(df[col],errors='coerce')
     return df.dropna(subset=['open','high','low','close'])
 
@@ -135,7 +138,7 @@ def rsi(s,n=14):
 def atr(df,n=14):
     pc=df.close.shift(); tr=pd.concat([(df.high-df.low).abs(),(df.high-pc).abs(),(df.low-pc).abs()],axis=1).max(axis=1); return tr.ewm(alpha=1/n,adjust=False).mean()
 def technical(df, opening_minutes=15):
-    if len(df)<20: return None
+    if len(df)<50: return None
     tp=(df.high+df.low+df.close)/3; cv=df.volume.cumsum().replace(0,np.nan); vwap=(tp*df.volume).cumsum()/cv
     ema9=df.close.ewm(span=9,adjust=False).mean(); ema20=df.close.ewm(span=20,adjust=False).mean(); ema50=df.close.ewm(span=50,adjust=False).mean()
     rs=rsi(df.close); at=atr(df); macd=df.close.ewm(span=12,adjust=False).mean()-df.close.ewm(span=26,adjust=False).mean(); sig=macd.ewm(span=9,adjust=False).mean()
@@ -163,6 +166,8 @@ def score_candidate(row,t,cfgtech):
     if direction!='NONE' and risk>0:
         desired=min(cfgtech['target_pct_cap']/100*trigger,2*risk); target=trigger+desired if direction=='LONG' else trigger-desired; rr=desired/risk
         if rr>=cfgtech['min_reward_risk']: score+=15; reasons.append('>=2R modeled path')
+    # Prototype target is synthetic; never treat it as a verified structural target.
+    target=None; rr=None
     # hard guards: no actionable trade if score/structure is inadequate. News/sector context is not yet verified here.
     status='REJECT'
     if direction!='NONE' and rr is not None and rr>=cfgtech['min_reward_risk']:
@@ -173,9 +178,20 @@ def score_candidate(row,t,cfgtech):
 
 
 def session_gate(mode, C):
-    now=datetime.now().astimezone()
-    if mode=='test': return True, 'test mode bypass'
-    if now.weekday()>=5: return False, 'weekend'
+    now=ist_now()
+    if mode=='test': return True, 'test mode bypass — NOT LIVE DATA'
+    # Require operator-maintained, verified NSE official calendar including special closures.
+    cal_path=DATA/'nse_holidays.json'
+    try:
+        raw=json.loads(cal_path.read_text())
+        if raw.get('year')!=now.year or raw.get('source')!='NSE_OFFICIAL' or not raw.get('verified_at') or raw.get('special_closures_verified') is not True:
+            return False, 'NSE OFFICIAL CALENDAR NOT VERIFIED'
+        from datetime import date
+        holidays={date.fromisoformat(x) for x in raw['closed_dates']}
+        ok,reason=session_check(now,holidays,True)
+        if not ok: return False,reason
+    except (OSError,ValueError,KeyError,TypeError):
+        return False, 'NSE OFFICIAL HOLIDAY/SPECIAL CLOSURE CALENDAR MISSING'
     windows=C.get('session_windows',{})
     w=windows.get(mode)
     if not w: return False, f'no configured {mode} window'
@@ -232,7 +248,7 @@ def regime(indexes,breadth):
 
 def run(mode):
     if not TOKEN: sys.exit('ERROR: UPSTOX_ACCESS_TOKEN missing from .env')
-    C=cfg(); print(f'[{datetime.now().astimezone().isoformat()}] {mode.upper()} scanner starting')
+    C=cfg(); print(f'[{ist_now().isoformat()}] {mode.upper()} scanner starting')
     allowed,why=session_gate(mode,C)
     if not allowed:
         print('\n=== RESULT ===')
@@ -249,14 +265,21 @@ def run(mode):
             print('\n=== RESULT ===')
             print(f"NO SCAN — CURRENT NSE SESSION DATA NOT VERIFIED: {freshness.get('reason')}")
             return
+    # Exclude individually stale quotes from the breadth and funnel.
+    quotes={key:q for key,q in quotes.items() if validate_quote(q,ist_now(),120)[0]}
     indexes=index_snapshot(); breadth=breadth_snapshot(universe,quotes); market=regime(indexes,breadth)
+    index_valid=sum(1 for q in indexes.values() if validate_quote(q,ist_now(),120)[0])
+    if mode!='test' and (index_valid<4 or breadth['usable']<450):
+        print('NO ACTIONABLE TRADE — INSUFFICIENT VERIFIED INDEX/QUOTE COVERAGE'); return
     print(f"Market regime={market['label']} breadth={breadth['advancers']}/{breadth['decliners']} usable={breadth['usable']}")
-    survivors=stage1(universe,quotes,C['stage1']); print(f'Stage-1 survivors={len(survivors)}')
+    survivors=stage1(universe,quotes,C['stage1'],ist_now()); print(f'Stage-1 survivors={len(survivors)}')
     deep=[]
     for row in survivors[:C['technical']['max_deep_candidates']]:
         meta=universe['instruments'][row['symbol']]
         try:
-            df=intraday(meta['instrument_key'],C['technical']['intraday_interval_minutes']); t=technical(df,C['technical']['opening_range_minutes']); s=score_candidate(row,t,C['technical']);
+            df=intraday(meta['instrument_key'],C['technical']['intraday_interval_minutes']); valid,why=validate_candles(df,ist_now(),C['technical']['intraday_interval_minutes'],min_bars=50)
+            if not valid: raise ValueError(why)
+            t=technical(df,C['technical']['opening_range_minutes']); s=score_candidate(row,t,C['technical']);
             # Industry alignment adjustment from verified constituent breadth.
             ind=dict(breadth.get('strongest_industries',[])+breadth.get('weakest_industries',[])).get(row.get('industry'),{})
             avg=ind.get('avg_change_pct') if ind else None
@@ -268,8 +291,8 @@ def run(mode):
         time.sleep(.05)
     deep=sorted(deep,key=lambda x:x.get('score',0),reverse=True)
     actionable=[x for x in deep if x.get('status')=='TRADE']; watches=[x for x in deep if x.get('status')=='WATCH']
-    report={'timestamp':datetime.now().astimezone().isoformat(),'mode':mode,'data_freshness':freshness,'market_regime':market,'breadth':breadth,'coverage':{'official_rows':universe['official_rows'],'mapped':universe['mapped_count'],'unmapped':universe['unmapped'],'quotes_received':len(quotes),'quote_errors':errors,'stage1_survivors':len(survivors),'deep_evaluated':len(deep)},'policy_note':'Fail-closed policy: local technical candidates remain WATCH until material company/macro news and scheduled-event risk are independently verified. Market regime and industry breadth are included locally.','trades':actionable,'watches':watches,'rejected':deep}
-    stamp=datetime.now().strftime('%Y%m%d_%H%M%S'); path=REPORTS/f'{mode}_{stamp}.json'; path.write_text(json.dumps(report,indent=2,default=str))
+    report={'timestamp':ist_now().isoformat(),'mode':mode,'data_freshness':freshness,'market_regime':market,'breadth':breadth,'coverage':{'official_rows':universe['official_rows'],'mapped':universe['mapped_count'],'unmapped':universe['unmapped'],'quotes_received':len(quotes),'quote_errors':errors,'usable_fresh_quotes':len(quotes),'index_quotes_verified':index_valid,'stage1_survivors':len(survivors),'deep_evaluated':len(deep)},'test_data':mode=='test','report_fresh':mode!='test','validation':{'event_news':'unverified','spread_liquidity':'unverified','final_100_point_score':'not_computed','structural_targets':'unverified'},'policy_note':'Fail-closed policy: local technical candidates remain WATCH until material company/macro news and scheduled-event risk are independently verified. Market regime and industry breadth are included locally.','trades':actionable,'watches':watches,'rejected':deep}
+    stamp=ist_now().strftime('%Y%m%d_%H%M%S'); path=REPORTS/f'{mode}_{stamp}.json'; path.write_text(json.dumps(report,indent=2,default=str))
     print('\n=== RESULT ==='); print('NO ACTIONABLE TRADE' if not actionable else f'{len(actionable)} ACTIONABLE TRADE(S)')
     print(f'WATCH={len(watches)} DEEP_EVALUATED={len(deep)} report={path}')
     for x in watches[:10]: print(f"WATCH {x['symbol']:12} {x.get('direction'):5} score={x.get('score')} LTP={x.get('ltp'):.2f} trigger={x.get('trigger')} stop={x.get('stop')} target={x.get('target')} RR={x.get('rr')}")
