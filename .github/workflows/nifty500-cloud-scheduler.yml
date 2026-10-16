@@ -1,0 +1,100 @@
+name: NIFTY 500 cloud scan trigger
+
+on:
+  # GitHub cron uses UTC. India has no daylight-saving time.
+  # 03:55 UTC = 09:25 IST; 07:05 UTC = 12:35 IST.
+  schedule:
+    - cron: '55 3 * * 1-5'
+    - cron: '5 7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'Scanner mode (test does not produce live trading signals)'
+        required: true
+        type: choice
+        options:
+          - test
+          - morning
+          - midday
+        default: test
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nifty500-cloud-scan
+  cancel-in-progress: false
+
+jobs:
+  trigger:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    env:
+      SCANNER_TRIGGER_SECRET: ${{ secrets.SCANNER_TRIGGER_SECRET }}
+      SCANNER_BASE_URL: ${{ vars.SCANNER_BASE_URL }}
+      SCHEDULE_CRON: ${{ github.event.schedule }}
+      MANUAL_MODE: ${{ inputs.mode }}
+      EVENT_NAME: ${{ github.event_name }}
+    steps:
+      - name: Authenticate and request cloud scan
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import sys
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import datetime
+          from zoneinfo import ZoneInfo
+
+          event = os.environ["EVENT_NAME"]
+          cron = os.environ.get("SCHEDULE_CRON", "")
+          mode = os.environ.get("MANUAL_MODE", "") if event == "workflow_dispatch" else {
+              "55 3 * * 1-5": "morning",
+              "5 7 * * 1-5": "midday",
+          }.get(cron, "")
+          if mode not in ("morning", "midday", "test"):
+              sys.exit("Refusing unknown scan mode or schedule.")
+          if event == "schedule":
+              now = datetime.now(ZoneInfo("Asia/Kolkata"))
+              start, end = {
+                  "morning": ((9, 20), (10, 15)),
+                  "midday": ((12, 30), (13, 15)),
+              }[mode]
+              if now.weekday() >= 5 or not (start <= (now.hour, now.minute) <= end):
+                  print(f"SKIPPED: {mode} outside approved IST scan window.")
+                  sys.exit(0)
+          base = os.environ.get("SCANNER_BASE_URL", "").strip().rstrip("/")
+          secret = os.environ.get("SCANNER_TRIGGER_SECRET", "")
+          if not base or not secret:
+              sys.exit("Missing GitHub variable SCANNER_BASE_URL or secret SCANNER_TRIGGER_SECRET.")
+          parsed = urllib.parse.urlsplit(base)
+          if parsed.scheme != "https" or parsed.hostname != "tarunreddy2705.pythonanywhere.com" or parsed.username or parsed.password or parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+              sys.exit("Refusing unapproved scanner URL.")
+          url = base + "/scan/" + mode
+          req = urllib.request.Request(url, data=b"", headers={
+              "X-Scanner-Secret": secret,
+              "Content-Type": "application/octet-stream",
+              "Accept": "application/json",
+              "User-Agent": "nifty500-github-scheduler/1.0",
+          }, method="POST")
+          try:
+              with urllib.request.urlopen(req, timeout=40) as resp:
+                  status = resp.status
+                  body = resp.read(4096)
+          except urllib.error.HTTPError as exc:
+              print(f"Trigger rejected: HTTP {exc.code} (no automatic retry).")
+              sys.exit(1)
+          except (urllib.error.URLError, TimeoutError) as exc:
+              print(f"Trigger request failed ({type(exc).__name__}); scan status unknown, no retry.")
+              sys.exit(1)
+          try:
+              result = json.loads(body)
+          except (ValueError, UnicodeDecodeError):
+              sys.exit("Trigger returned non-JSON response.")
+          if status != 202 or result.get("status") != "accepted" or result.get("mode") != mode:
+              sys.exit(f"Unexpected trigger acknowledgment: HTTP {status}.")
+          print(f"ACCEPTED: {mode} scan requested. HTTP 202 does NOT confirm scan completion or a valid report.")
+          PY
