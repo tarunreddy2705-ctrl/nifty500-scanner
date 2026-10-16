@@ -107,17 +107,17 @@ def main():
             if status == 200 and payload.get("report_fresh") is True:
                 stamp = timestamp(payload.get("report_timestamp"))
                 # Must be generated after the trigger was accepted. Allow 10 seconds clock skew.
-                if stamp >= STARTED.replace(microsecond=0) and isinstance(payload.get("report"), dict):
+                if stamp >= (STARTED - __import__("datetime").timedelta(seconds=10)) and isinstance(payload.get("report"), dict):
                     post_telegram(render_report(payload))
                     print("Validated report notification sent for", MODE)
                     return
                 last_error = "latest report predates this notification run"
             elif status == 409 and isinstance(payload.get("report"), dict):
                 stamp = timestamp(payload.get("report_timestamp"))
-                if stamp >= STARTED.replace(microsecond=0):
+                if stamp >= (STARTED - __import__("datetime").timedelta(seconds=10)):
                     outcome = str(payload["report"].get("outcome") or "UNVERIFIED")
                     reason = str(payload["report"].get("reason") or payload.get("error") or "Report rejected")
-                    post_telegram("NIFTY 500 " + MODE.upper() + "\\nSCAN UNVERIFIED — NO ACTIONABLE TRADE\\nScanner outcome: " + outcome[:100] + "\\nReason: " + reason[:500] + "\\nReport reader rejected this run (HTTP 409).")
+                    post_telegram("NIFTY 500 " + MODE.upper() + "\nSCAN UNVERIFIED — NO ACTIONABLE TRADE\nScanner outcome: " + outcome[:100] + "\nReason: " + reason[:500] + "\nReport reader rejected this run (HTTP 409).")
                     print("Rejected current-run report notification sent")
                     return
                 last_error = "rejected report predates this run"
