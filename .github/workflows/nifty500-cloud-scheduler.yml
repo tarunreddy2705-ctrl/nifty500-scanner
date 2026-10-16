@@ -35,7 +35,11 @@ jobs:
       SCHEDULE_CRON: ${{ github.event.schedule }}
       MANUAL_MODE: ${{ inputs.mode }}
       EVENT_NAME: ${{ github.event_name }}
+      SCANNER_REPORT_READ_SECRET: ${{ secrets.SCANNER_REPORT_READ_SECRET }}
+      TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
     steps:
+      - uses: actions/checkout@v4
       - name: Authenticate and request cloud scan
         shell: bash
         run: |
@@ -98,3 +102,16 @@ jobs:
               sys.exit(f"Unexpected trigger acknowledgment: HTTP {status}.")
           print(f"ACCEPTED: {mode} scan requested. HTTP 202 does NOT confirm scan completion or a valid report.")
           PY
+      - name: Retrieve report and notify Telegram
+        if: success()
+        shell: bash
+        run: |
+          export SCAN_MODE="${{ inputs.mode }}"
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            case "$SCHEDULE_CRON" in
+              '55 3 * * 1-5') export SCAN_MODE=morning ;;
+              '5 7 * * 1-5') export SCAN_MODE=midday ;;
+              *) exit 1 ;;
+            esac
+          fi
+          python3 scripts/telegram_report_alert.py
