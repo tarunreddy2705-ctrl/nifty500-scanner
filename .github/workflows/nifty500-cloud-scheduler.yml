@@ -28,7 +28,7 @@ concurrency:
 jobs:
   trigger:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 8
     env:
       SCANNER_TRIGGER_SECRET: ${{ secrets.SCANNER_TRIGGER_SECRET }}
       SCANNER_BASE_URL: ${{ vars.SCANNER_BASE_URL }}
