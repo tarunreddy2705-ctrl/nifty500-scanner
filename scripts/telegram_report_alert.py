@@ -13,7 +13,7 @@ READ_SECRET = os.environ.get("SCANNER_REPORT_READ_SECRET", "")
 BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 MODE = os.environ.get("SCAN_MODE", "test")
-STARTED = datetime.now(timezone.utc)
+STARTED = datetime.fromisoformat(os.environ.get("SCAN_TRIGGER_TIME_UTC", datetime.now(timezone.utc).isoformat())).astimezone(timezone.utc)
 WAIT_SECONDS = 240
 
 
@@ -112,6 +112,15 @@ def main():
                     print("Validated report notification sent for", MODE)
                     return
                 last_error = "latest report predates this notification run"
+            elif status == 409 and isinstance(payload.get("report"), dict):
+                stamp = timestamp(payload.get("report_timestamp"))
+                if stamp >= STARTED.replace(microsecond=0):
+                    outcome = str(payload["report"].get("outcome") or "UNVERIFIED")
+                    reason = str(payload["report"].get("reason") or payload.get("error") or "Report rejected")
+                    post_telegram("NIFTY 500 " + MODE.upper() + "\\nSCAN UNVERIFIED — NO ACTIONABLE TRADE\\nScanner outcome: " + outcome[:100] + "\\nReason: " + reason[:500] + "\\nReport reader rejected this run (HTTP 409).")
+                    print("Rejected current-run report notification sent")
+                    return
+                last_error = "rejected report predates this run"
             elif status in (404, 409, 503):
                 last_error = "report not ready or rejected (HTTP " + str(status) + ")"
             else:
