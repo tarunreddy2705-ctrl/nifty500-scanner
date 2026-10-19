@@ -1,4 +1,5 @@
 name: NIFTY 500 cloud scan trigger
+run-name: NIFTY 500 ${{ github.event_name == 'schedule' && (github.event.schedule == '55 3 * * 1-5' && 'MORNING' || 'MIDDAY') || inputs.mode }} — cloud scan and Telegram
 
 on:
   # GitHub cron uses UTC. India has no daylight-saving time.
@@ -52,7 +53,7 @@ jobs:
           import urllib.error
           import urllib.parse
           import urllib.request
-          from datetime import datetime
+          from datetime import datetime, timezone
           from zoneinfo import ZoneInfo
 
           event = os.environ["EVENT_NAME"]
@@ -63,6 +64,8 @@ jobs:
           }.get(cron, "")
           if mode not in ("morning", "midday", "test"):
               sys.exit("Refusing unknown scan mode or schedule.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"mode={mode}\n")
           if event == "schedule":
               now = datetime.now(ZoneInfo("Asia/Kolkata"))
               start, end = {
@@ -70,8 +73,10 @@ jobs:
                   "midday": ((12, 30), (13, 15)),
               }[mode]
               if now.weekday() >= 5 or not (start <= (now.hour, now.minute) <= end):
+                  with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+                      output.write("skipped=true\n")
                   print(f"SKIPPED: {mode} outside approved IST scan window.")
-                  sys.exit(0)
+                  sys.exit(1)
           base = os.environ.get("SCANNER_BASE_URL", "").strip().rstrip("/")
           secret = os.environ.get("SCANNER_TRIGGER_SECRET", "")
           if not base or not secret:
@@ -86,6 +91,8 @@ jobs:
               "Accept": "application/json",
               "User-Agent": "nifty500-github-scheduler/1.0",
           }, method="POST")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"trigger_time_utc={datetime.now(timezone.utc).isoformat()}\n")
           try:
               with urllib.request.urlopen(req, timeout=40) as resp:
                   status = resp.status
@@ -107,15 +114,12 @@ jobs:
           print(f"ACCEPTED: {mode} scan requested. HTTP 202 does NOT confirm scan completion or a valid report.")
           PY
       - name: Retrieve report and notify Telegram
-        if: success() && steps.trigger.outputs.accepted == 'true'
+        if: always() && steps.trigger.outputs.mode != ''
+        env:
+          SCAN_MODE: ${{ steps.trigger.outputs.mode }}
+          SCAN_TRIGGER_TIME_UTC: ${{ steps.trigger.outputs.trigger_time_utc }}
+          SCAN_OPERATION_STATUS: ${{ steps.trigger.outputs.skipped == 'true' && 'skipped' || steps.trigger.outputs.accepted == 'true' && 'accepted' || 'trigger_failed' }}
         shell: bash
         run: |
-          export SCAN_MODE="${{ inputs.mode }}"
-          if [ "$EVENT_NAME" = "schedule" ]; then
-            case "$SCHEDULE_CRON" in
-              '55 3 * * 1-5') export SCAN_MODE=morning ;;
-              '5 7 * * 1-5') export SCAN_MODE=midday ;;
-              *) exit 1 ;;
-            esac
-          fi
           python3 scripts/telegram_report_alert.py
+
