@@ -1,13 +1,6 @@
-name: NIFTY 500 Scanner
+name: NIFTY 500 Scanner (manual diagnostics only)
 
 on:
-  schedule:
-    # 09:25 AM IST
-    - cron: "55 3 * * 1-5"
-
-    # 12:35 PM IST
-    - cron: "5 7 * * 1-5"
-
   workflow_dispatch:
     inputs:
       mode:
@@ -63,3 +56,4 @@ jobs:
           path: reports/
           if-no-files-found: ignore
           retention-days: 30
+
