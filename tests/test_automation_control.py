@@ -15,6 +15,11 @@ from automation_control import Control, IST, install_automation
 
 
 class AutomationTests(unittest.TestCase):
+    def test_github_has_no_automatic_schedules(self):
+        workflows = Path(__file__).resolve().parents[1] / '.github/workflows'
+        for path in workflows.glob('*.yml'):
+            self.assertNotIn('  schedule:', path.read_text())
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
