@@ -7,13 +7,14 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 BASE = os.environ.get("SCANNER_BASE_URL", "").rstrip("/")
 READ_SECRET = os.environ.get("SCANNER_REPORT_READ_SECRET", "")
 BOT = os.environ.get("TELEGRAM_BOT_TOKEN", "")
 CHAT = os.environ.get("TELEGRAM_CHAT_ID", "")
 MODE = os.environ.get("SCAN_MODE", "test")
-STARTED = datetime.fromisoformat(os.environ.get("SCAN_TRIGGER_TIME_UTC", datetime.now(timezone.utc).isoformat())).astimezone(timezone.utc)
+STARTED = datetime.fromisoformat(os.environ.get("SCAN_TRIGGER_TIME_UTC") or datetime.now(timezone.utc).isoformat()).astimezone(timezone.utc)
 WAIT_SECONDS = 240
 
 
@@ -91,6 +92,20 @@ def render_report(payload):
 def main():
     if MODE not in ("morning", "midday", "test"):
         raise RuntimeError("Invalid mode")
+    operation = os.environ.get("SCAN_OPERATION_STATUS", "accepted")
+    if operation in ("skipped", "trigger_failed"):
+        now = datetime.now(ZoneInfo("Asia/Kolkata")).isoformat()
+        if operation == "skipped":
+            heading = "SCAN SKIPPED — SCHEDULER MISSED THE SCAN WINDOW"
+            reason = "The workflow started outside the approved scan window. No scan was requested by this run."
+        else:
+            heading = "SCAN TRIGGER FAILED / STATUS UNKNOWN"
+            reason = "The scan trigger was not confirmed. A timed-out request may still have started a scan; no automatic retry was made."
+        post_telegram("NIFTY 500 " + MODE.upper() + "\n" + heading + "\nTime IST: " + now + "\n" + reason + "\nNO ACTIONABLE TRADE — check GitHub Actions logs.")
+        print("Operational failure notification sent:", operation)
+        sys.exit(1)
+    if operation != "accepted":
+        raise RuntimeError("Invalid scan operation status")
     parsed = urllib.parse.urlsplit(BASE)
     if parsed.scheme != "https" or parsed.hostname != "tarunreddy2705.pythonanywhere.com" or parsed.path not in ("", "/") or parsed.username or parsed.password or parsed.query or parsed.fragment:
         raise RuntimeError("Unapproved scanner base URL")
@@ -137,3 +152,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
