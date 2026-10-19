@@ -1,12 +1,8 @@
-name: NIFTY 500 cloud scan trigger
-run-name: NIFTY 500 ${{ github.event_name == 'schedule' && (github.event.schedule == '55 3 * * 1-5' && 'MORNING' || 'MIDDAY') || inputs.mode }} — cloud scan and Telegram
+name: NIFTY 500 cloud scan (manual diagnostics only)
+run-name: NIFTY 500 ${{ inputs.mode }} — manual cloud diagnostic
 
 on:
-  # GitHub cron uses UTC. India has no daylight-saving time.
-  # 03:55 UTC = 09:25 IST; 07:05 UTC = 12:35 IST.
-  schedule:
-    - cron: '55 3 * * 1-5'
-    - cron: '5 7 * * 1-5'
+  # Production schedules and delivery are now owned by cron-job.org.
   workflow_dispatch:
     inputs:
       mode:
