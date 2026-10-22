@@ -81,6 +81,19 @@ def render_report(payload):
         "WATCH candidates: " + str(len(watches)),
         "No orders placed. Verify all signals independently.",
     ]
+    details=[]
+    if isinstance(report.get('test_data'),bool):
+        details.append('Report mode: '+('DIAGNOSTIC' if report['test_data'] else 'LIVE DATA (scanner-reported)'))
+    if report.get('setup_type')=='OPENING_RANGE_ONLY':
+        details.append('Setup: opening range only; separate midday strategy unavailable')
+    if report.get('policy_note'):
+        details.append('Policy: '+str(report['policy_note'])[:220])
+    summary=report.get('rejection_summary')
+    if isinstance(summary,list):
+        for item in summary[:4]:
+            if isinstance(item,dict):
+                details.append(f"Rejected {item.get('count','?')}: {str(item.get('reason','unknown'))[:180]}")
+    parts[-1:-1]=details
     if outcome == "WATCH ONLY" and MODE != "test":
         for item in watches[:3]:
             if isinstance(item, dict):
@@ -152,4 +165,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

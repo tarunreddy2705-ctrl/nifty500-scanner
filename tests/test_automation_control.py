@@ -25,7 +25,7 @@ class AutomationTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
         (self.root / "reports").mkdir()
-        self.clock = datetime(2026, 10, 19, 9, 25, tzinfo=IST)
+        self.clock = datetime(2026, 10, 19, 9, 35, tzinfo=IST)
         self.send = Mock(return_value=101)
         self.control = Control(self.root, {"SCANNER_TRIGGER_SECRET": "dummy-test-secret"}, lambda: self.clock, self.send)
 
@@ -52,6 +52,34 @@ class AutomationTests(unittest.TestCase):
     def test_late_trigger_does_not_run(self):
         self.clock = self.clock.replace(hour=13, minute=19)
         self.assertEqual(self.control.claim("midday")[1], 409)
+
+    def test_early_morning_trigger_does_not_consume_daily_claim(self):
+        self.clock=self.clock.replace(minute=25)
+        self.assertEqual(self.control.claim('morning')[1],409)
+        self.assertEqual(self.control.check('morning')[0]['status'],'idle')
+        self.send.assert_not_called()
+        self.clock=self.clock.replace(minute=35)
+        self.assertIsNone(self.control.claim('morning'))
+
+    def test_report_explains_rejections_and_watch_only_policy(self):
+        self.control.claim('morning')
+        self.report(test_data=False,setup_type='OPENING_RANGE_ONLY',
+                    policy_note='WATCH-only; TRADE disabled',
+                    rejection_summary=[{'reason':'No identified target','count':17}])
+        self.control.check('morning')
+        message=self.send.call_args.args[0]
+        self.assertIn('LIVE DATA (scanner-reported)',message)
+        self.assertIn('Rejected 17: No identified target',message)
+        self.assertIn('WATCH-only; TRADE disabled',message)
+        self.assertIn('separate midday strategy unavailable',message)
+
+    def test_rejection_detail_secrets_are_redacted(self):
+        self.control.claim('morning')
+        self.report(rejection_summary=[{'reason':'dummy-test-secret','count':1}])
+        self.control.check('morning')
+        message=self.send.call_args.args[0]
+        self.assertNotIn('dummy-test-secret',message)
+        self.assertIn('[redacted]',message)
 
     def test_weekend_no_scan_or_missing_alert(self):
         self.clock = self.clock.replace(day=24)
@@ -135,3 +163,4 @@ class AutomationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -1,7 +1,7 @@
 {
   "session_windows": {
     "morning": {
-      "start": "09:20",
+      "start": "09:35",
       "end": "10:15"
     },
     "midday": {
@@ -22,11 +22,18 @@
     "opening_range_minutes": 15,
     "min_reward_risk": 2.0,
     "min_trade_score": 80,
-    "min_watch_score": 65,
+    "min_watch_score": 75,
     "target_pct_cap": 2.0,
-    "stop_atr_multiple": 0.8
+    "stop_atr_multiple": 0.8,
+    "min_target_pct": 1.0,
+    "max_vwap_distance_atr": 2.0
   },
   "freshness": {
-    "max_quote_age_minutes": 20
+    "max_quote_age_minutes": 2,
+    "min_usable_coverage": 0.95
+  },
+  "policy": {
+    "trade_enabled": false,
+    "reason": "Independent news/event and execution checks and performance validation not implemented"
   }
 }
