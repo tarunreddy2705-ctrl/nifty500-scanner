@@ -137,7 +137,7 @@ class PaperTests(unittest.TestCase):
             self.assertEqual(again['counts'],{'TARGET':1})
             report['test_data']=True
             self.assertEqual(paper.update_paper_tracking(path,report,fetch,self.start)['status'],'SKIPPED')
-            with sqlite3.connect(path) as db:
+            with paper.connect(path) as db:
                 self.assertEqual(db.execute('SELECT count(*) FROM paper_signals').fetchone()[0],1)
 
 

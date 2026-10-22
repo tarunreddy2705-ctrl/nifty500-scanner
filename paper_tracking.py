@@ -7,12 +7,22 @@ import hashlib
 import json
 import math
 import sqlite3
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 IST=ZoneInfo('Asia/Kolkata')
 TERMINAL={'TARGET','STOP','SESSION_EXIT','EXPIRED','GAP_CANCELLED',
           'INVALIDATED','AMBIGUOUS','AMBIGUOUS_START','AMBIGUOUS_ENTRY_BAR'}
+
+
+@contextmanager
+def connect(path):
+    db=sqlite3.connect(path,timeout=5)
+    try:
+        with db: yield db
+    finally:
+        db.close()
 
 
 def stamp(value):
@@ -109,7 +119,7 @@ def update_paper_tracking(path,report,fetch,now,clock=None):
     now=stamp(now)
     if report.get('test_data') is not False or report.get('mode') not in ('morning','midday'):
         return {'status':'SKIPPED','reason':'Only live-mode paper evidence is registered'}
-    with sqlite3.connect(path,timeout=5) as db:
+    with connect(path) as db:
         db.execute('CREATE TABLE IF NOT EXISTS paper_signals (id TEXT PRIMARY KEY, created TEXT, payload TEXT, status TEXT, checked TEXT, result TEXT)')
         rows=db.execute('SELECT id,payload FROM paper_signals WHERE status NOT IN ('+','.join('?' for _ in TERMINAL)+') ORDER BY checked,created LIMIT 3',tuple(sorted(TERMINAL))).fetchall()
     reconciled=[]
@@ -119,14 +129,14 @@ def update_paper_tracking(path,report,fetch,now,clock=None):
             result=evaluate(signal,fetch(signal['instrument_key'],stamp(signal['created_at']).date()),now)
         except Exception as exc:
             result={'status':'DATA_UNAVAILABLE','reason':type(exc).__name__}
-        with sqlite3.connect(path,timeout=5) as db:
+        with connect(path) as db:
             db.execute('UPDATE paper_signals SET status=?,checked=?,result=? WHERE id=?',
                        (result['status'],now.isoformat(),json.dumps(result),key))
         reconciled.append({'symbol':signal['symbol'],**result})
     # Formation cannot predate reconciliation work or publication preparation.
     now=stamp(clock()) if clock else now
     registered=0
-    with sqlite3.connect(path,timeout=5) as db:
+    with connect(path) as db:
         for candidate in report.get('watches',[]):
             if candidate.get('status')!='WATCH': continue
             quote_time=candidate.get('quote_timestamp')
