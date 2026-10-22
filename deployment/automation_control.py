@@ -153,7 +153,7 @@ class Control:
         if report:
             data, stamp = report
             age = (now - stamp).total_seconds()
-            delayed = age > 1200
+            delayed = age > 120
             outcome = str(data.get("outcome") or "UNVERIFIED").upper()
             coverage = data["coverage"]
             watches = data.get("watches")
@@ -173,6 +173,11 @@ class Control:
                 details.append('Report mode: '+('DIAGNOSTIC' if data['test_data'] else 'LIVE DATA (scanner-reported)'))
             if data.get('setup_type')=='OPENING_RANGE_ONLY':
                 details.append('Setup: opening range only; separate midday strategy unavailable')
+            elif data.get('setup_type'):
+                details.append('Setup: '+str(data['setup_type'])[:100]+' (unvalidated)')
+            paper=data.get('paper_tracking')
+            if isinstance(paper,dict):
+                details.append('Paper tracking: '+str(paper.get('status','unknown'))+'; simulated, not live trades')
             if data.get('policy_note'):
                 details.append('Policy: '+str(data['policy_note'])[:220])
             summary=data.get('rejection_summary')
@@ -180,6 +185,18 @@ class Control:
                 for item in summary[:4]:
                     if isinstance(item,dict):
                         details.append(f"Rejected {item.get('count','?')}: {str(item.get('reason','unknown'))[:180]}")
+            if not delayed and mode!='test' and outcome=='WATCH ONLY' and isinstance(watches,list):
+                for candidate in watches[:3]:
+                    if not isinstance(candidate,dict): continue
+                    try:
+                        quote_stamp=datetime.fromisoformat(candidate['quote_timestamp'])
+                        quote_age=(now-quote_stamp).total_seconds()
+                    except (KeyError,TypeError,ValueError):
+                        quote_age=999999
+                    if not -5<=quote_age<=120:
+                        details.append('WATCH evidence expired/unverified; no current entry levels')
+                        continue
+                    details.append(f"CONDITIONAL WATCH {candidate.get('symbol','?')} {candidate.get('direction','?')}: trigger {candidate.get('trigger','?')}, stop {candidate.get('stop','?')}, target {candidate.get('target','?')}, R:R {candidate.get('rr','?')}. Not an entry instruction.")
             if details:
                 extra='\n'.join(details)
                 for value in self.env.values():

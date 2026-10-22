@@ -26,7 +26,9 @@
     "target_pct_cap": 2.0,
     "stop_atr_multiple": 0.8,
     "min_target_pct": 1.0,
-    "max_vwap_distance_atr": 2.0
+    "max_vwap_distance_atr": 2.0,
+    "midday_max_range_atr": 2.0,
+    "midday_max_trigger_distance_atr": 1.5
   },
   "freshness": {
     "max_quote_age_minutes": 2,

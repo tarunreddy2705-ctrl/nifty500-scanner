@@ -137,6 +137,21 @@ class AutomationTests(unittest.TestCase):
         self.assertTrue(self.control.check("morning")[0]["delayed"])
         self.assertIn("NOT A CURRENT SIGNAL", self.send.call_args.args[0])
 
+    def test_report_over_two_minutes_old_is_delayed(self):
+        self.control.claim('morning')
+        self.report()
+        self.clock+=timedelta(minutes=3)
+        self.assertTrue(self.control.check('morning')[0]['delayed'])
+
+    def test_conditional_watch_levels_require_fresh_quote(self):
+        self.control.claim('morning')
+        candidate={'symbol':'FIXTURE','direction':'LONG','trigger':100,'stop':99,'target':102,'rr':2,
+                   'quote_timestamp':self.clock.isoformat()}
+        self.report(outcome='WATCH ONLY',watches=[candidate])
+        self.control.check('morning')
+        self.assertIn('CONDITIONAL WATCH FIXTURE LONG',self.send.call_args.args[0])
+        self.assertIn('Not an entry instruction',self.send.call_args.args[0])
+
     def test_report_recovery_after_missing_alert(self):
         self.control.claim("morning")
         self.clock += timedelta(minutes=11)

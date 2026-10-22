@@ -20,6 +20,12 @@ configuration; they do not cause additional scans.
 
 ## 23 October timing and explanation repair
 
+For the subsequent experimental midday/paper-evidence revision, also install
+`paper_tracking.py` beside the scanner. See [MIDDAY_AND_PAPER.md](MIDDAY_AND_PAPER.md)
+for the new setup specification, tracking assumptions and remaining readiness
+gaps. The historical repair notes below describe the earlier opening-range-only
+revision. Schedules and the WATCH-only restriction remain unchanged.
+
 The configured 15-minute opening range ends at 09:30 IST. The previous 09:25
 trigger necessarily rejected every candidate for an incomplete range. Schedule
 the morning trigger at **09:35 IST** and install this revision's `config.json`,
