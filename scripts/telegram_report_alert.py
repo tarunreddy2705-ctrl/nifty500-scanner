@@ -86,6 +86,8 @@ def render_report(payload):
         details.append('Report mode: '+('DIAGNOSTIC' if report['test_data'] else 'LIVE DATA (scanner-reported)'))
     if report.get('setup_type')=='OPENING_RANGE_ONLY':
         details.append('Setup: opening range only; separate midday strategy unavailable')
+    elif report.get('setup_type'):
+        details.append('Setup: '+str(report['setup_type'])[:100]+' (unvalidated)')
     if report.get('policy_note'):
         details.append('Policy: '+str(report['policy_note'])[:220])
     summary=report.get('rejection_summary')

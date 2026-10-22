@@ -6,13 +6,14 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 import hashlib
 from collections import Counter
+from paper_tracking import update_paper_tracking
 from urllib.parse import quote
 import numpy as np
 import pandas as pd
 import requests
 from dotenv import load_dotenv
 
-VERSION='2026-10-23-timing-and-rejection-reporting'
+VERSION='2026-10-23-midday-and-paper-tracking'
 IST=ZoneInfo('Asia/Kolkata')
 def now_ist(): return datetime.now(IST)
 ROOT=Path(__file__).resolve().parent
@@ -245,10 +246,15 @@ def technical(df, opening_minutes=15, historical=None, interval=5, now=None):
             'opening_complete':opening_complete,'day_high':float(today.high.max()),'day_low':float(today.low.min()),
             'recent_low':float(today.tail(3).low.min()),'recent_high':float(today.tail(3).high.max()),
             'previous_high':float(previous.high.max()),'previous_low':float(previous.low.min()),
+            'midday_range_high':float(today.tail(6).high.max()),
+            'midday_range_low':float(today.tail(6).low.min()),
+            'midday_range_bars':len(today.tail(6)),
+            'midday_range_start':today.tail(6).timestamp.iloc[0].isoformat(),
+            'midday_range_end':(last.timestamp+pd.Timedelta(minutes=interval)).isoformat(),
             'bars':len(today),'warmup_bars':len(past),'last_bar':last.timestamp.isoformat(),
             'bar_end':(last.timestamp+pd.Timedelta(minutes=interval)).isoformat(),'previous_session':str(previous_date)}
 
-def score_candidate(row,t,cfgtech):
+def score_candidate(row,t,cfgtech,mode='morning'):
     if not t: return {'status':'DATA_UNAVAILABLE','score':None,'reason':'Technical data unavailable'}
     mandatory=('close','vwap','ema9','ema20','ema50','rsi','atr','macd','macd_signal')
     if any(not math.isfinite(t[k]) for k in mandatory) or t['atr']<=0:
@@ -267,15 +273,39 @@ def score_candidate(row,t,cfgtech):
     if row['turnover_cr']>=25: score+=10
     if not t['opening_complete']: blockers.append('15-minute opening range still developing')
     if abs(p-t['vwap'])>cfgtech.get('max_vwap_distance_atr',2)*t['atr']: blockers.append('Extended from VWAP; do not chase')
-    # Conditional opening-range entry. Stop references observed session structure.
-    trigger=t['opening_high']+0.05 if long else t['opening_low']-0.05
-    if (long and p>trigger+t['atr']*.25) or (not long and p<trigger-t['atr']*.25): blockers.append('Opening trigger already passed; require a new retest setup')
-    stop=t['recent_low']-0.05 if long else t['recent_high']+0.05
+    # Midday uses a fresh 30-minute consolidation, not the opening trigger.
+    setup='MIDDAY_CONSOLIDATION_BREAKOUT' if mode=='midday' else 'OPENING_RANGE_BREAKOUT'
+    if mode=='midday':
+        high=t.get('midday_range_high'); low=t.get('midday_range_low')
+        if (t.get('midday_range_bars',0)<6 or high is None or low is None or
+                not math.isfinite(high) or not math.isfinite(low) or low<=0 or high<=low):
+            return {'status':'DATA_UNAVAILABLE','score':None,'direction':direction,
+                    'reason':'Six completed midday consolidation bars unavailable','setup_type':setup}
+        if high-low>cfgtech.get('midday_max_range_atr',2)*t['atr']:
+            blockers.append('Midday range too wide; no clean consolidation')
+        if not ((long and t['ema20']>=t['ema50']) or (not long and t['ema20']<=t['ema50'])):
+            blockers.append('Midday EMA20/EMA50 trend confirmation absent')
+        trigger=high+0.05 if long else low-0.05
+        stop=low-0.05 if long else high+0.05
+        live=float(row.get('ltp',p))
+        if (long and live>=trigger) or (not long and live<=trigger):
+            blockers.append('Midday trigger already passed in current quote; require new consolidation')
+        if abs(trigger-p)>cfgtech.get('midday_max_trigger_distance_atr',1.5)*t['atr']:
+            blockers.append('Midday trigger too far from current price')
+    else:
+        trigger=t['opening_high']+0.05 if long else t['opening_low']-0.05
+        if (long and p>trigger+t['atr']*.25) or (not long and p<trigger-t['atr']*.25): blockers.append('Opening trigger already passed; require a new retest setup')
+        stop=t['recent_low']-0.05 if long else t['recent_high']+0.05
     risk=trigger-stop if long else stop-trigger
     # Closest observed prior-session/daily candle barrier, never a manufactured 2R target.
     levels=t.get('resistance_levels' if long else 'support_levels',[])
     room=sorted([v for v in levels if v>trigger] if long else [v for v in levels if v<trigger],reverse=not long)
-    target=room[0] if room else None
+    structural_barrier=room[0] if room else None
+    target=structural_barrier
+    if mode=='midday' and target is not None:
+        # Cap the paper target inside observed structural room, never beyond it.
+        cap=cfgtech.get('target_pct_cap',2)/100
+        target=min(target,trigger*(1+cap)) if long else max(target,trigger*(1-cap))
     reward=(target-trigger if long else trigger-target) if target is not None else None
     rr=reward/risk if reward is not None and risk>0 else None
     move=reward/trigger*100 if reward is not None and trigger>0 else None
@@ -287,9 +317,10 @@ def score_candidate(row,t,cfgtech):
     status='REJECT' if blockers else 'WATCH'
     return {'direction':direction,'score':score,'score_system':'prototype technical score; not win probability',
             'status':status,'trigger':round(trigger,2),'stop':round(stop,2),
+            'setup_type':setup,'structural_barrier':structural_barrier,
             'target':round(target,2) if target else None,'rr':round(rr,2) if rr else None,
             'expected_move_pct':round(move,2) if move else None,'risk_per_share':round(risk,2),
-            'confirmation_required':'Completed opening range, trigger/retest confirmation, current quotes, market/industry alignment and independent news/event checks',
+            'confirmation_required':'Future trigger confirmation, current quotes, market/industry alignment and independent news/event and execution checks; WATCH is not permission to enter',
             'blockers':blockers,
             'reason':'; '.join(blockers or ['Technical WATCH only; news/event verification and execution checks remain unavailable'])}
 
@@ -425,9 +456,13 @@ def run(mode):
     for p in (DATA,REPORTS,LOGS): p.mkdir(parents=True,exist_ok=True)
     report={'timestamp':now_ist().isoformat(),'mode':mode,'schema_version':2,'scanner_version':VERSION,
             'test_data':mode=='test','outcome':'SCAN FAILED','reason':None,'trades':[],'watches':[],
-            'setup_type':'OPENING_RANGE_ONLY',
+            'setup_type':'MIDDAY_CONSOLIDATION_BREAKOUT' if mode=='midday' else 'OPENING_RANGE_BREAKOUT',
             'strategy_limitations':['WATCH-only; actionable TRADE signals disabled',
-                                    'Separate midday continuation/retest strategy not implemented'],
+                                    'Midday consolidation setup is experimental; performance unvalidated',
+                                    'Independent news/events, spread and execution checks unavailable'],
+            'readiness':{'signals':'WATCH_ONLY','news_events':'UNAVAILABLE',
+                         'execution_spread':'UNAVAILABLE','strategy_performance':'UNVALIDATED',
+                         'constituent_currency':'UNVERIFIED_LOCAL_CSV'},
             'rejected':[],'data_unavailable':[],'coverage':{},
             'policy_note':'WATCH-only repair. No automated TRADE: verified news/events, full execution checks and strategy validation are not implemented.'}
     try:
@@ -462,7 +497,8 @@ def run(mode):
                 t['daily_ema50']=float(daily.close.ewm(span=50,adjust=False).mean().iloc[-1])
                 t['resistance_levels']=sorted(set([t['previous_high']]+daily.tail(20).high.tolist()))
                 t['support_levels']=sorted(set([t['previous_low']]+daily.tail(20).low.tolist()))
-                s=score_candidate(row,t,C['technical']); valid+=1
+                s=score_candidate(row,t,C['technical'],mode=mode)
+                if s['status']!='DATA_UNAVAILABLE': valid+=1
                 avg=breadth['industries'].get(row.get('industry'),{}).get('avg_change_pct')
                 direction=s.get('direction')
                 aligned=avg is not None and ((direction=='LONG' and avg>=0) or (direction=='SHORT' and avg<=0))
@@ -478,7 +514,7 @@ def run(mode):
                     s['status']='REJECT'
                     s['blockers']=list(dict.fromkeys(s.get('blockers',[])+blockers))
                     s['reason']='; '.join(s['blockers'])
-                deep.append({**row,**t,**s,'industry_avg_change_pct':avg})
+                deep.append({**row,**t,**s,'industry_avg_change_pct':avg,'instrument_key':meta['instrument_key']})
             except Exception as exc:
                 deep.append({**row,'status':'DATA_UNAVAILABLE','score':None,'reason':str(exc)})
             time.sleep(.05)
@@ -507,7 +543,33 @@ def run(mode):
     except Exception as exc:
         report['outcome']='SCAN FAILED'; report['reason']=str(exc)
     report['timestamp']=now_ist().isoformat()
+    if mode!='test' and report['outcome'] in ('NO TRADE','WATCH ONLY'):
+        # Paper reconciliation runs after live decision freshness checks. It
+        # cannot promote a WATCH or change the scan's outcome to TRADE.
+        try:
+            report['paper_tracking']=update_paper_tracking(
+                ROOT/'paper_tracking.sqlite3',report,
+                lambda key,day: paper_candles(key,day),now_ist(),clock=now_ist)
+        except Exception as exc:
+            report['paper_tracking']={'status':'UNAVAILABLE','reason':type(exc).__name__}
+        expired=[candidate for candidate in report['watches']
+                 if (now_ist()-_epoch_to_dt(candidate['quote_timestamp'])).total_seconds()>C['freshness']['max_quote_age_minutes']*60]
+        if expired:
+            for candidate in expired:
+                candidate['status']='DATA_UNAVAILABLE'; candidate['reason']='Quote expired during paper reconciliation'
+            report['data_unavailable'].extend(expired)
+            report['watches']=[]
+            report['outcome']='SCAN FAILED'; report['reason']='Quote freshness expired before report delivery; no actionable signal'
     return save_report(report)
+
+def paper_candles(key,day):
+    """Fetch original five-minute bars; tracking never uses a price snapshot."""
+    if day==now_ist().date():
+        frame=intraday(key,5)
+    else:
+        frame=history(key,interval=5,lookback_days=(now_ist().date()-day).days+1)
+    return [{'timestamp':r.timestamp.isoformat(),'open':float(r.open),'high':float(r.high),
+             'low':float(r.low),'close':float(r.close)} for r in frame.itertuples()]
 
 if __name__=='__main__':
     ap=argparse.ArgumentParser(); ap.add_argument('--mode',choices=['morning','midday','test'],default='test'); args=ap.parse_args(); run(args.mode)
