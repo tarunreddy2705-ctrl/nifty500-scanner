@@ -17,7 +17,7 @@ from zoneinfo import ZoneInfo
 from flask import jsonify, request
 
 IST = ZoneInfo("Asia/Kolkata")
-SLOTS = {"morning": ((9, 25), (9, 20), (10, 15)),
+SLOTS = {"morning": ((9, 35), (9, 35), (10, 15)),
          "midday": ((12, 35), (12, 30), (13, 15))}
 
 
@@ -168,6 +168,24 @@ class Control:
                        f"Fresh quotes: {coverage.get('fresh_quotes', 'unknown')}\n"
                        f"Deep evaluated: {coverage.get('deep_evaluated', 'unknown')}\nWATCH candidates: {count}\n"
                        "Delivery checks report-file timestamps only; strategy and market-data validation remain separate.\nNo orders placed.")
+            details=[]
+            if isinstance(data.get('test_data'),bool):
+                details.append('Report mode: '+('DIAGNOSTIC' if data['test_data'] else 'LIVE DATA (scanner-reported)'))
+            if data.get('setup_type')=='OPENING_RANGE_ONLY':
+                details.append('Setup: opening range only; separate midday strategy unavailable')
+            if data.get('policy_note'):
+                details.append('Policy: '+str(data['policy_note'])[:220])
+            summary=data.get('rejection_summary')
+            if isinstance(summary,list):
+                for item in summary[:4]:
+                    if isinstance(item,dict):
+                        details.append(f"Rejected {item.get('count','?')}: {str(item.get('reason','unknown'))[:180]}")
+            if details:
+                extra='\n'.join(details)
+                for value in self.env.values():
+                    if isinstance(value,str) and len(value)>12:
+                        extra=extra.replace(value,'[redacted]')
+                message=message.replace('\nDelivery checks', '\n'+extra+'\nDelivery checks')
             sent = self.notify(mode, "report", message)
             self.set_status(mode, "completed")
             return {"mode": mode, "status": "completed", "telegram": sent, "report_timestamp": stamp.isoformat(), "delayed": delayed}, 200 if sent == "sent" else 503
@@ -222,3 +240,4 @@ def install_automation(app, root, env):
         return jsonify(status="installed", ledger=True, telegram_configured=bool(env.get("TELEGRAM_BOT_TOKEN") and env.get("TELEGRAM_CHAT_ID")), runner="existing best-effort PythonAnywhere background runner")
 
     return control
+

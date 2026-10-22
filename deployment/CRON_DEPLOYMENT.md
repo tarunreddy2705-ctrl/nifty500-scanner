@@ -7,7 +7,7 @@ existing scanner and GitHub retaining source and manual diagnostic workflows.
 
 | Purpose | Cron expression | Authenticated target |
 | --- | --- | --- |
-| Morning trigger | `25 9 * * 1-5` | `POST /scan/morning` |
+| Morning trigger | `35 9 * * 1-5` | `POST /scan/morning` |
 | Midday trigger | `35 12 * * 1-5` | `POST /scan/midday` |
 | Morning completion / Telegram | `*/2 9,10 * * 1-5` | `POST /automation/check/morning` |
 | Midday completion / Telegram | `*/2 12,13 * * 1-5` | `POST /automation/check/midday` |
@@ -17,6 +17,36 @@ cron-job.org. Credentials must never appear in URLs, source, logs or screenshots
 Completion checks outside their slot's active window respond `idle` without
 running the scanner or sending a message. The broad hour schedules simplify
 configuration; they do not cause additional scans.
+
+## 23 October timing and explanation repair
+
+The configured 15-minute opening range ends at 09:30 IST. The previous 09:25
+trigger necessarily rejected every candidate for an incomplete range. Schedule
+the morning trigger at **09:35 IST** and install this revision's `config.json`,
+`scanner.py`, and `deployment/automation_control.py` together. The deployed
+`automation_control.py` lives beside the Flask app; reload that web app after
+replacing it. Midday remains 12:35 IST. Completion-check schedules stay unchanged.
+Changing this document or merging a PR does not update cron-job.org.
+
+Perform the cutover outside the morning window: back up those three deployed
+files, update the cron morning job to `35 9 * * 1-5` in Asia/Kolkata (preserving
+its private header), copy the files, and reload the app. Verify that the saved
+job and `SLOTS` both specify 09:35; an old 09:25 trigger now gets HTTP 409 before
+claiming the day's run. Do not delete the SQLite ledger to force a second run.
+
+The scanner now records structured blocker counts in saved reports and its
+cloud summary, and Telegram includes the leading rejection reasons, live/test
+label and WATCH-only policy. Reasons can overlap for the same candidate.
+Both modes still use the opening-range setup. This revision labels that limit;
+it does not implement or validate a new midday trading strategy. No risk,
+momentum, target-room or no-chasing thresholds have been relaxed. TRADE remains
+disabled. A complete report is operational evidence, not proof of data accuracy
+or trading profitability.
+
+After deployment, verify the first real 09:35 run has `mode: morning`,
+`test_data: false`, the new scanner version, completed opening-range candles,
+coverage, rejection counts and one acknowledged Telegram delivery. Then verify
+the 12:35 midday run independently. Offline tests cannot establish those results.
 
 ## Install without replacing the live application
 
@@ -89,3 +119,4 @@ Do not run both schedulers automatically after rollback without duplicate-run
 protection. The ledger is operational evidence; do not delete it to force a retry.
 
 Offline checks: `python -m unittest discover -s tests -v` (requires Flask).
+
